@@ -208,9 +208,10 @@ function orderCorners(pts){
 }
 
 /* Detecta el rectángulo del papel por brillo (el ticket suele ser más claro que
-   la mesa). Devuelve 4 esquinas o null si no hay un papel claro. */
+   la mesa). Funciona con CUALQUIER proporción: tickets cuadrados o tiras muy
+   estrechas y largas (típico ticket de restaurante). Devuelve 4 esquinas o null. */
 function autoDetectCorners(canvas){
-  const maxW = 320;
+  const maxW = 340;
   const s = Math.min(1, maxW / canvas.width);
   const w = Math.max(1, Math.round(canvas.width*s)), h = Math.max(1, Math.round(canvas.height*s));
   const tmp = document.createElement('canvas'); tmp.width=w; tmp.height=h;
@@ -219,23 +220,26 @@ function autoDetectCorners(canvas){
   const gray = new Float32Array(w*h); let sum=0;
   for(let i=0,p=0;i<d.length;i+=4,p++){ const g=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114; gray[p]=g; sum+=g; }
   const mean = sum/(w*h);
-  const thr = Math.min(238, mean + 22);             // umbral de "papel claro"
+  const thr = Math.min(238, mean + 18);             // umbral de "papel claro"
   const colC = new Int32Array(w), rowC = new Int32Array(h);
-  for(let y=0;y<h;y++) for(let x=0;x<w;x++){ if(gray[y*w+x] > thr){ colC[x]++; rowC[y]++; } }
-  const cThr = h*0.30, rThr = w*0.30;               // el borde debe ser una línea "llena"
-  let x0=0, x1=w-1, y0=0, y1=h-1;
-  while(x0<w  && colC[x0] < cThr) x0++;
-  while(x1>0  && colC[x1] < cThr) x1--;
-  while(y0<h  && rowC[y0] < rThr) y0++;
-  while(y1>0  && rowC[y1] < rThr) y1--;
-  if(x1-x0 < w*0.25 || y1-y0 < h*0.25) return null;  // no se ve un papel claro
+  let total = 0;
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){ if(gray[y*w+x] > thr){ colC[x]++; rowC[y]++; total++; } }
+  if(total < w*h*0.015) return null;                // casi nada claro: no hay papel
+
+  // Caja que contiene el grueso de los píxeles claros (percentiles), sin depender
+  // de la forma: se recorta un 1,5% de masa por lado para ignorar ruido disperso.
+  const cut = total * 0.015;
+  let acc, x0=0, x1=w-1, y0=0, y1=h-1;
+  acc=0; for(let x=0;x<w;x++){ acc+=colC[x]; if(acc>=cut){ x0=x; break; } }
+  acc=0; for(let x=w-1;x>=0;x--){ acc+=colC[x]; if(acc>=cut){ x1=x; break; } }
+  acc=0; for(let y=0;y<h;y++){ acc+=rowC[y]; if(acc>=cut){ y0=y; break; } }
+  acc=0; for(let y=h-1;y>=0;y--){ acc+=rowC[y]; if(acc>=cut){ y1=y; break; } }
+  if(x1-x0 < w*0.06 || y1-y0 < h*0.06) return null; // caja degenerada
+
   const fx = canvas.width/w, fy = canvas.height/h, pad = 2;
-  return [
-    {x:Math.max(0,(x0-pad)*fx),           y:Math.max(0,(y0-pad)*fy)},
-    {x:Math.min(canvas.width,(x1+1+pad)*fx), y:Math.max(0,(y0-pad)*fy)},
-    {x:Math.min(canvas.width,(x1+1+pad)*fx), y:Math.min(canvas.height,(y1+1+pad)*fy)},
-    {x:Math.max(0,(x0-pad)*fx),           y:Math.min(canvas.height,(y1+1+pad)*fy)},
-  ];
+  const L = Math.max(0,(x0-pad)*fx), R = Math.min(canvas.width,(x1+1+pad)*fx);
+  const T = Math.max(0,(y0-pad)*fy), B = Math.min(canvas.height,(y1+1+pad)*fy);
+  return [ {x:L,y:T},{x:R,y:T},{x:R,y:B},{x:L,y:B} ];
 }
 
 /* Resuelve la homografía que lleva el cuadrilátero 'from' al 'to' (from -> to). */
@@ -444,11 +448,25 @@ async function confirmCrop(){
 /* ============================================================================
    OCR (Tesseract) + interpretación de datos del ticket
    ========================================================================== */
+/* Normaliza el ancho a ~1200px para que la letra tenga un tamaño que Tesseract
+   lee bien: amplía tickets estrechos (tiras de restaurante) y reduce los anchos. */
+function scaleForOCR(canvas){
+  const target = 1200;
+  let scale = target / canvas.width;
+  scale = Math.min(scale, 3);        // no ampliar más de 3x (evita emborronar)
+  if(Math.abs(scale - 1) < 0.03) return canvas;
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(canvas.width*scale));
+  c.height = Math.max(1, Math.round(canvas.height*scale));
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(canvas, 0, 0, c.width, c.height);
+  return c;
+}
 async function runOCR(canvas){
   if(!window.Tesseract) return '';
   try{
-    // Escala de grises a un ancho razonable ayuda a la velocidad/precisión
-    const work = resizeCanvas(canvas, 1000);
+    const work = scaleForOCR(canvas);
     const { data } = await Tesseract.recognize(work, 'spa', {
       // sin logger para no ralentizar
     });
@@ -1106,4 +1124,4 @@ window.addEventListener('DOMContentLoaded', async ()=>{
 });
 
 // Exponer algunas funciones para pruebas/depuración
-window.__app = { DB, parseReceipt, parseMoney, buildExcel, buildZip, state };
+window.__app = { DB, parseReceipt, parseMoney, buildExcel, buildZip, autoDetectCorners, state };
