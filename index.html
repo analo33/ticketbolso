@@ -1,0 +1,331 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0d1b2a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tickets">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="icon" href="icon.svg">
+<title>Tickets — Gastos deducibles</title>
+
+<!-- Librerías (se cargan desde CDN). OpenCV se carga solo cuando hace falta escanear. -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.0/dist/tesseract.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
+
+<style>
+  :root{
+    --bg:#0d1b2a; --bg2:#132b45; --card:#ffffff; --ink:#0d1b2a; --muted:#5b6b7d;
+    --line:#e4e9ef; --brand:#1f7ae0; --brand-d:#155cb0; --ok:#12a150; --danger:#e0413b;
+    --chip:#eef3f9; --shadow:0 6px 24px rgba(9,20,35,.14);
+    --safe-top:env(safe-area-inset-top); --safe-bot:env(safe-area-inset-bottom);
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--ink); overscroll-behavior:none;
+  }
+  button{font-family:inherit; cursor:pointer; border:none; background:none}
+  input,select{font-family:inherit; font-size:17px}
+  .app{max-width:520px; margin:0 auto; min-height:100%; position:relative}
+
+  /* ---------- Pantallas ---------- */
+  .screen{display:none; min-height:100vh; min-height:100dvh; flex-direction:column}
+  .screen.active{display:flex}
+
+  /* ---------- Cabecera ---------- */
+  .topbar{
+    display:flex; align-items:center; gap:10px; padding:calc(var(--safe-top) + 14px) 16px 14px;
+    color:#fff; background:linear-gradient(180deg,var(--bg),var(--bg2)); position:sticky; top:0; z-index:5;
+  }
+  .topbar h1{font-size:19px; margin:0; font-weight:650; flex:1}
+  .iconbtn{width:40px; height:40px; border-radius:12px; display:grid; place-items:center; color:#fff; background:rgba(255,255,255,.10); font-size:20px}
+  .iconbtn:active{background:rgba(255,255,255,.22)}
+
+  /* ---------- HOME ---------- */
+  #home{background:linear-gradient(180deg,var(--bg),#0a1622)}
+  .home-body{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; text-align:center; color:#fff}
+  .home-tag{color:#9db4cc; font-size:15px; margin:0 0 6px; letter-spacing:.2px}
+  .home-title{font-size:26px; font-weight:700; margin:0 0 34px}
+  .scan-btn{
+    width:230px; height:230px; border-radius:50%; background:radial-gradient(circle at 50% 40%,#2b8bf2,#155cb0);
+    color:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;
+    box-shadow:0 18px 50px rgba(31,122,224,.5), inset 0 2px 10px rgba(255,255,255,.25); border:5px solid rgba(255,255,255,.14);
+    transition:transform .08s;
+  }
+  .scan-btn:active{transform:scale(.96)}
+  .scan-btn .cam{font-size:74px; line-height:1}
+  .scan-btn .lbl{font-size:20px; font-weight:700}
+  .home-actions{display:flex; flex-direction:column; gap:14px; margin-top:40px; width:100%; max-width:320px}
+  .ghost-btn{color:#cfe0f2; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14); padding:15px; border-radius:14px; font-size:16px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:8px}
+  .ghost-btn:active{background:rgba(255,255,255,.16)}
+  .home-stats{margin-top:26px; color:#7f97af; font-size:13px}
+
+  /* ---------- CÁMARA ---------- */
+  #camera{background:#000}
+  .cam-stage{flex:1; position:relative; overflow:hidden; background:#000}
+  #video{position:absolute; inset:0; width:100%; height:100%; object-fit:cover}
+  .cam-guide{position:absolute; inset:9% 7%; border:2px dashed rgba(255,255,255,.85); border-radius:14px; pointer-events:none}
+  .cam-hint{position:absolute; left:0; right:0; top:calc(var(--safe-top) + 14px); text-align:center; color:#fff; font-size:14px; text-shadow:0 1px 4px #000}
+  .cam-controls{padding:18px 24px calc(var(--safe-bot) + 22px); background:#000; display:flex; align-items:center; justify-content:space-between}
+  .shutter{width:78px; height:78px; border-radius:50%; background:#fff; border:5px solid #cfd8e3; box-shadow:0 0 0 4px rgba(255,255,255,.25)}
+  .shutter:active{transform:scale(.92)}
+  .cam-side{width:64px; text-align:center; color:#fff; font-size:14px}
+  .cam-side button{color:#fff; font-size:14px; padding:8px}
+
+  /* ---------- AJUSTE DE ESCANEO (recorte) ---------- */
+  #crop{background:#0a1622}
+  .crop-stage{flex:1; position:relative; overflow:hidden; display:grid; place-items:center; background:#0a1622}
+  #cropCanvas{max-width:100%; max-height:100%; touch-action:none}
+  .crop-msg{color:#cfe0f2; text-align:center; font-size:14px; padding:10px 16px}
+  .crop-controls{padding:16px 16px calc(var(--safe-bot) + 18px); display:flex; gap:12px; background:#0a1622}
+
+  /* ---------- Botonera genérica ---------- */
+  .btn{flex:1; padding:16px; border-radius:14px; font-size:17px; font-weight:700; display:flex; align-items:center; justify-content:center; gap:8px}
+  .btn-primary{background:var(--brand); color:#fff}
+  .btn-primary:active{background:var(--brand-d)}
+  .btn-primary:disabled{opacity:.5}
+  .btn-light{background:rgba(255,255,255,.12); color:#fff}
+  .btn-outline{background:#fff; color:var(--brand); border:2px solid var(--brand)}
+
+  /* ---------- REVISIÓN / FICHA ---------- */
+  .sheet{flex:1; background:#eef2f6; overflow-y:auto; -webkit-overflow-scrolling:touch}
+  .scan-preview{background:#0a1622; padding:14px; text-align:center}
+  .scan-preview img{max-height:210px; max-width:100%; border-radius:10px; box-shadow:var(--shadow)}
+  .ocr-status{display:flex; align-items:center; gap:10px; justify-content:center; color:#cfe0f2; font-size:14px; padding:10px}
+  .spin{width:16px; height:16px; border:2px solid rgba(255,255,255,.3); border-top-color:#fff; border-radius:50%; animation:sp .8s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .form{padding:16px; display:flex; flex-direction:column; gap:14px; padding-bottom:120px}
+  .field label{display:block; font-size:13px; font-weight:650; color:var(--muted); margin:0 0 6px 2px; text-transform:uppercase; letter-spacing:.4px}
+  .field input, .field select{width:100%; padding:14px; border:1.5px solid var(--line); border-radius:12px; background:#fff; color:var(--ink)}
+  .field input:focus, .field select:focus{outline:none; border-color:var(--brand)}
+  .row2{display:flex; gap:12px}
+  .row2 .field{flex:1}
+  .cats{display:flex; flex-wrap:wrap; gap:8px}
+  .cat{padding:11px 14px; border-radius:999px; background:var(--chip); color:var(--muted); font-size:15px; font-weight:600; border:1.5px solid transparent}
+  .cat.on{background:var(--brand); color:#fff; border-color:var(--brand)}
+  .rates{display:flex; gap:8px}
+  .rate{flex:1; padding:11px; border-radius:12px; background:var(--chip); color:var(--muted); font-weight:700; border:1.5px solid transparent}
+  .rate.on{background:#0d1b2a; color:#fff; border-color:#0d1b2a}
+  .calc-note{font-size:12.5px; color:var(--muted); background:#fff; border:1px dashed var(--line); border-radius:10px; padding:10px 12px}
+  .calc-note b{color:var(--ink)}
+  .sticky-save{position:fixed; left:0; right:0; bottom:0; max-width:520px; margin:0 auto; padding:12px 16px calc(var(--safe-bot) + 12px); background:linear-gradient(180deg,rgba(238,242,246,0),#eef2f6 30%); display:flex; gap:12px}
+
+  /* ---------- ARCHIVO (meses) ---------- */
+  .list{flex:1; background:#eef2f6; overflow-y:auto; padding:12px 12px calc(var(--safe-bot) + 24px)}
+  .empty{padding:60px 30px; text-align:center; color:var(--muted)}
+  .empty .big{font-size:46px; margin-bottom:10px}
+  .month-card{background:#fff; border-radius:16px; padding:16px 18px; margin-bottom:12px; box-shadow:var(--shadow); display:flex; align-items:center; gap:14px}
+  .month-card:active{transform:scale(.99)}
+  .month-ic{width:46px; height:46px; border-radius:12px; background:var(--chip); display:grid; place-items:center; font-size:22px}
+  .month-info{flex:1}
+  .month-name{font-weight:700; font-size:17px}
+  .month-sub{color:var(--muted); font-size:13.5px; margin-top:2px}
+  .month-total{font-weight:800; font-size:17px; color:var(--ink)}
+  .chev{color:#b7c2cf; font-size:22px}
+
+  /* ---------- DETALLE MES ---------- */
+  .month-head{background:#fff; padding:16px; box-shadow:var(--shadow); display:flex; align-items:center; justify-content:space-between}
+  .month-head .lbl{color:var(--muted); font-size:13px; text-transform:uppercase; letter-spacing:.4px}
+  .month-head .tot{font-size:26px; font-weight:800}
+  .month-head .cnt{color:var(--muted); font-size:14px; text-align:right}
+  .selbar{display:flex; align-items:center; justify-content:space-between; padding:10px 16px; background:#eef2f6; position:sticky; top:0; z-index:2}
+  .selbar button{color:var(--brand); font-weight:700; font-size:15px; padding:6px}
+  .tk{background:#fff; border-radius:14px; margin-bottom:10px; box-shadow:var(--shadow); display:flex; align-items:center; gap:12px; padding:10px 12px}
+  .tk .thumb{width:52px; height:64px; border-radius:8px; object-fit:cover; background:#dfe6ee; flex-shrink:0}
+  .tk .ti{flex:1; min-width:0}
+  .tk .tm{font-weight:700; font-size:15.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .tk .td{color:var(--muted); font-size:13px; margin-top:2px}
+  .tk .ta{font-weight:800; font-size:16px; white-space:nowrap}
+  .tk .chk{width:26px; height:26px; border-radius:50%; border:2px solid var(--line); display:grid; place-items:center; flex-shrink:0; color:#fff; font-size:15px}
+  .tk.sel .chk{background:var(--brand); border-color:var(--brand)}
+  .tk.sel{outline:2px solid var(--brand)}
+  .cat-tag{display:inline-block; font-size:11.5px; font-weight:700; color:var(--brand-d); background:#e7f0fb; border-radius:6px; padding:1px 7px; margin-top:4px}
+  .actionbar{position:sticky; bottom:0; background:#fff; border-top:1px solid var(--line); padding:12px 14px calc(var(--safe-bot) + 12px); display:flex; gap:10px}
+  .actionbar .btn{padding:14px 10px; font-size:15px}
+  .btn-excel{background:var(--ok); color:#fff}
+  .btn-zip{background:#0d1b2a; color:#fff}
+
+  /* ---------- DETALLE TICKET ---------- */
+  .detail{flex:1; background:#eef2f6; overflow-y:auto; padding:16px; padding-bottom:40px}
+  .detail .pic{width:100%; border-radius:14px; box-shadow:var(--shadow); background:#fff}
+  .kv{background:#fff; border-radius:14px; margin-top:14px; box-shadow:var(--shadow); overflow:hidden}
+  .kv .r{display:flex; justify-content:space-between; padding:13px 16px; border-bottom:1px solid var(--line); font-size:15.5px}
+  .kv .r:last-child{border-bottom:none}
+  .kv .r .k{color:var(--muted)}
+  .kv .r .v{font-weight:650; text-align:right}
+  .detail-actions{display:flex; gap:10px; margin-top:14px}
+  .btn-del{background:#fff; color:var(--danger); border:2px solid #f3c9c7}
+
+  /* ---------- Toast / overlay ---------- */
+  .toast{position:fixed; left:50%; bottom:calc(var(--safe-bot) + 30px); transform:translateX(-50%); background:#0d1b2a; color:#fff; padding:12px 18px; border-radius:12px; font-size:15px; box-shadow:var(--shadow); z-index:50; opacity:0; transition:opacity .2s, transform .2s; pointer-events:none; max-width:90%}
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(-6px)}
+  .overlay{position:fixed; inset:0; background:rgba(8,16,28,.72); display:none; align-items:center; justify-content:center; z-index:60; backdrop-filter:blur(2px)}
+  .overlay.show{display:flex}
+  .overlay .box{background:#fff; border-radius:18px; padding:26px; text-align:center; max-width:300px; margin:20px}
+  .overlay .box .spin{width:34px; height:34px; border-color:rgba(13,27,42,.15); border-top-color:var(--brand); margin:0 auto 14px}
+  .overlay .box p{margin:0; font-weight:600; color:var(--ink)}
+  .overlay .box small{color:var(--muted); display:block; margin-top:6px}
+  .hidden{display:none !important}
+</style>
+
+<div class="app">
+
+  <!-- ============ HOME ============ -->
+  <section id="home" class="screen active">
+    <div class="home-body">
+      <p class="home-tag">Gastos deducibles</p>
+      <h1 class="home-title">¿Qué ticket digitalizamos?</h1>
+      <button class="scan-btn" id="btnScan">
+        <span class="cam">📸</span>
+        <span class="lbl">Escanear ticket</span>
+      </button>
+      <div class="home-actions">
+        <button class="ghost-btn" id="btnUpload">🖼️ Subir una imagen</button>
+        <button class="ghost-btn" id="btnArchive">🗂️ Ver archivo por meses</button>
+      </div>
+      <div class="home-stats" id="homeStats"></div>
+    </div>
+    <input type="file" id="fileInput" accept="image/*" class="hidden">
+  </section>
+
+  <!-- ============ CÁMARA ============ -->
+  <section id="camera" class="screen">
+    <div class="topbar" style="background:#000">
+      <button class="iconbtn" id="camBack">✕</button>
+      <h1>Escanear ticket</h1>
+    </div>
+    <div class="cam-stage">
+      <video id="video" playsinline autoplay muted></video>
+      <div class="cam-guide"></div>
+      <div class="cam-hint">Encaja el ticket dentro del marco</div>
+    </div>
+    <div class="cam-controls">
+      <div class="cam-side"><button id="camUpload">Galería</button></div>
+      <button class="shutter" id="btnShutter" aria-label="Capturar"></button>
+      <div class="cam-side"></div>
+    </div>
+  </section>
+
+  <!-- ============ AJUSTE / RECORTE ============ -->
+  <section id="crop" class="screen">
+    <div class="topbar" style="background:#0a1622">
+      <button class="iconbtn" id="cropBack">‹</button>
+      <h1>Ajustar bordes</h1>
+    </div>
+    <div class="crop-stage">
+      <canvas id="cropCanvas"></canvas>
+    </div>
+    <p class="crop-msg" id="cropMsg">Arrastra las esquinas para ajustar el ticket</p>
+    <div class="crop-controls">
+      <button class="btn btn-light" id="cropRetry">Repetir</button>
+      <button class="btn btn-primary" id="cropConfirm">Usar este escaneo ›</button>
+    </div>
+  </section>
+
+  <!-- ============ REVISIÓN / FICHA ============ -->
+  <section id="review" class="screen">
+    <div class="topbar">
+      <button class="iconbtn" id="reviewBack">‹</button>
+      <h1>Confirma los datos</h1>
+    </div>
+    <div class="sheet">
+      <div class="scan-preview"><img id="reviewImg" alt="Escaneo"></div>
+      <div class="ocr-status" id="ocrStatus"><span class="spin"></span> Leyendo el ticket…</div>
+      <div class="form">
+        <div class="field">
+          <label>Comercio</label>
+          <input id="fMerchant" type="text" placeholder="Nombre del comercio" autocomplete="off">
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>CIF / NIF</label>
+            <input id="fTaxId" type="text" placeholder="B12345678" autocomplete="off">
+          </div>
+          <div class="field">
+            <label>Fecha</label>
+            <input id="fDate" type="date">
+          </div>
+        </div>
+        <div class="field">
+          <label>Categoría</label>
+          <div class="cats" id="cats"></div>
+        </div>
+        <div class="field">
+          <label>Total (€)</label>
+          <input id="fTotal" type="text" inputmode="decimal" placeholder="0,00">
+        </div>
+        <div class="field">
+          <label>Tipo de IVA</label>
+          <div class="rates" id="rates"></div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>Base imponible (€)</label>
+            <input id="fBase" type="text" inputmode="decimal" placeholder="0,00">
+          </div>
+          <div class="field">
+            <label>Cuota IVA (€)</label>
+            <input id="fIva" type="text" inputmode="decimal" placeholder="0,00">
+          </div>
+        </div>
+        <div class="calc-note" id="calcNote"></div>
+      </div>
+    </div>
+    <div class="sticky-save">
+      <button class="btn btn-primary" id="btnSave">💾 Guardar ticket</button>
+    </div>
+  </section>
+
+  <!-- ============ ARCHIVO (lista de meses) ============ -->
+  <section id="archive" class="screen">
+    <div class="topbar">
+      <button class="iconbtn" id="archBack">‹</button>
+      <h1>Archivo por meses</h1>
+    </div>
+    <div class="list" id="monthsList"></div>
+  </section>
+
+  <!-- ============ DETALLE DE MES ============ -->
+  <section id="month" class="screen">
+    <div class="topbar">
+      <button class="iconbtn" id="monthBack">‹</button>
+      <h1 id="monthTitle">Mes</h1>
+    </div>
+    <div class="month-head">
+      <div><div class="lbl">Total del mes</div><div class="tot" id="monthTotal">0,00 €</div></div>
+      <div class="cnt" id="monthCount">0 tickets</div>
+    </div>
+    <div class="selbar">
+      <button id="selAll">Seleccionar todo</button>
+      <button id="selNone">Quitar selección</button>
+    </div>
+    <div class="list" id="ticketsList"></div>
+    <div class="actionbar">
+      <button class="btn btn-excel" id="btnExcel">📊 Excel</button>
+      <button class="btn btn-zip" id="btnZip">📦 Paquete</button>
+      <button class="btn btn-primary" id="btnSend">✉️ Asesor</button>
+    </div>
+  </section>
+
+  <!-- ============ DETALLE DE TICKET ============ -->
+  <section id="ticket" class="screen">
+    <div class="topbar">
+      <button class="iconbtn" id="ticketBack">‹</button>
+      <h1>Ticket</h1>
+      <button class="iconbtn" id="ticketPdf">⬇️</button>
+    </div>
+    <div class="detail" id="ticketDetail"></div>
+  </section>
+
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="overlay" id="overlay">
+  <div class="box"><div class="spin"></div><p id="ovText">Procesando…</p><small id="ovSub"></small></div>
+</div>
+
+<script src="app.js" defer></script>

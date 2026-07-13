@@ -1,0 +1,14 @@
+{
+  "name": "Tickets — Gastos deducibles",
+  "short_name": "Tickets",
+  "description": "Escanea tickets de gasto con la cámara, extrae los datos y organiza todo por meses para tu asesor fiscal.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d1b2a",
+  "theme_color": "#0d1b2a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
