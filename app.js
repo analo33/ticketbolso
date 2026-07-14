@@ -514,6 +514,55 @@ async function runOCR(canvas){
   }catch(e){ console.warn('OCR error', e); return ''; }
 }
 
+/* Nombres de mes en español y catalán (sin acentos, para búsqueda). */
+const MESES_NOMBRE = {
+  enero:1,ene:1, febrero:2,feb:2, marzo:3,mar:3, abril:4,abr:4, mayo:5,may:5,
+  junio:6,jun:6, julio:7,jul:7, agosto:8,ago:8,
+  septiembre:9,setiembre:9,sept:9,sep:9,set:9, octubre:10,oct:10,
+  noviembre:11,nov:11, diciembre:12,dic:12,
+  gener:1, febrer:2, marc:3, abr:4, maig:5, juny:6, juliol:7, agost:8,
+  setembre:9, novembre:11, desembre:12, des:12
+};
+function sinAcentos(s){ return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,''); }
+
+/* Construye una fecha ISO validando que sea real y no futura (un ticket no es del futuro). */
+function toISODate(y,m,d){
+  if(y<100) y += 2000;
+  const now = new Date(), maxY = now.getFullYear()+1;
+  if(m<1||m>12||d<1||d>31||y<2015||y>maxY) return null;
+  const bis = (y%4===0 && (y%100!==0||y%400===0));
+  const dim = [31, bis?29:28, 31,30,31,30,31,31,30,31,30,31][m-1];
+  if(d>dim) return null;
+  const iso = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  if(new Date(iso+'T00:00:00').getTime() > now.getTime() + 2*86400000) return null; // no futura
+  return iso;
+}
+
+/* Extrae la FECHA DEL TICKET (no la del escaneo). Prioriza la línea rotulada
+   "Fecha", admite dd/mm/aaaa, aaaa-mm-dd y meses con nombre. Devuelve ISO o null. */
+function parseDate(text, rawLines){
+  const cands = [];
+  (rawLines||text.split('\n')).forEach((line, idx)=>{
+    const bonus = /fecha|data\b|f\.?\s*compra|fec\.|fch/i.test(line) ? 10 : 0;
+    // numérico: dd/mm/aaaa, dd-mm-aa, aaaa-mm-dd, dd.mm.aaaa
+    let m, re = /\b(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/g;
+    while((m = re.exec(line))){
+      const iso = (m[1].length===4) ? toISODate(+m[1],+m[2],+m[3])   // aaaa-mm-dd
+                                    : toISODate(+m[3],+m[2],+m[1]);   // dd-mm-aaaa (España)
+      if(iso) cands.push({iso, score:bonus, pos:idx});
+    }
+    // con nombre de mes: "3 de marzo de 2026", "03 MAR 2026", "3-mar-26"
+    re = /\b(\d{1,2})\s*(?:de\s+)?[-\s]?([a-zA-Záéíóúñç]{3,10})\.?\s*(?:de\s+)?[-\s]?(\d{2,4})\b/g;
+    while((m = re.exec(line))){
+      const mo = MESES_NOMBRE[sinAcentos(m[2])];
+      if(mo){ const iso = toISODate(+m[3], mo, +m[1]); if(iso) cands.push({iso, score:bonus+2, pos:idx}); }
+    }
+  });
+  if(!cands.length) return null;
+  cands.sort((a,b)=> b.score - a.score || a.pos - b.pos);  // rótulo "fecha" primero, luego la más arriba
+  return cands[0].iso;
+}
+
 /* Interpreta el texto OCR y devuelve campos best-effort. */
 function parseReceipt(text){
   const res = { merchant:'', taxId:'', date:'', total:null, base:null, ivaRate:null, ivaAmount:null };
@@ -549,16 +598,8 @@ function parseReceipt(text){
     if(mm) res.taxId = mm[1];
   }
 
-  // ---- Fecha (dd/mm/aaaa, dd-mm-aa, etc.)
-  const dm = text.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/);
-  if(dm){
-    let d=+dm[1], mo=+dm[2], y=+dm[3];
-    if(y<100) y += 2000;
-    if(d>31 && dm[3].length>=4){ /* formato aaaa-mm-dd */ y=+dm[1]; mo=+dm[2]; d=+dm[3]; }
-    if(mo>=1&&mo<=12&&d>=1&&d<=31&&y>=2000&&y<2100){
-      res.date = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    }
-  }
+  // ---- Fecha del ticket (varios formatos; prioriza la línea "Fecha")
+  res.date = parseDate(text, rawLines);
 
   // ---- Todos los importes del texto
   const moneyRe = /(\d{1,3}(?:[.\s]\d{3})*|\d+)[.,]\d{2}\b/g;
@@ -687,10 +728,22 @@ async function startReview(finalCanvas){
   }
   updateCalcNote();
 
-  const got = [p.merchant&&'comercio', p.date&&'fecha', p.total!==null&&'total'].filter(Boolean);
+  const fDate = document.getElementById('fDate');
+  const partes = [];
+  if(p.merchant) partes.push('comercio');
+  if(p.date) partes.push('fecha');
+  if(p.total!==null) partes.push('total');
   const st = document.getElementById('ocrStatus');
-  if(got.length) st.innerHTML = `✨ Detecté: ${got.join(', ')}. Revisa y corrige si hace falta.`;
-  else st.innerHTML = '⚠️ No pude leer los datos con seguridad. Rellénalos a mano (2 toques).';
+  if(!p.date){
+    // no se leyó la fecha del ticket -> avisar y resaltar (está la de hoy como provisional)
+    fDate.style.outline = '2px solid #e0a11b';
+    st.innerHTML = partes.length
+      ? `✨ Detecté: ${partes.join(', ')}. ⚠️ No leí la <b>fecha del ticket</b>: puse la de hoy, cámbiala a la del ticket para archivarlo en su mes.`
+      : '⚠️ No pude leer los datos (incluida la <b>fecha del ticket</b>). Rellénalos a mano; la fecha decide el mes de archivo.';
+  } else {
+    fDate.style.outline = '';
+    st.innerHTML = `✨ Detecté: ${partes.join(', ')}. Revisa y corrige si hace falta.`;
+  }
 }
 
 async function saveTicket(){
@@ -1153,6 +1206,7 @@ function wire(){
   document.getElementById('fTotal').addEventListener('input', recalcFromTotal);
   document.getElementById('fBase').addEventListener('input', updateCalcNote);
   document.getElementById('fIva').addEventListener('input', updateCalcNote);
+  document.getElementById('fDate').addEventListener('change', e=>{ e.target.style.outline=''; });
   buildCatChips(); buildRateChips();
 
   // ARCHIVO
