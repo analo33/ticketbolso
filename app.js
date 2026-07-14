@@ -371,19 +371,29 @@ function openCropWith(sourceCanvas){
     ];
     document.getElementById('cropMsg').textContent = 'Arrastra las esquinas para encuadrar el ticket';
   }
-  fitCropCanvas();
-  drawCrop();
   nav.go('crop');
+  // medir el escenario cuando YA es visible; síncrono (no dependemos de rAF, que
+  // no se dispara con la pestaña en segundo plano) y otra pasada por si el layout
+  // aún no estaba listo.
+  fitCropCanvas(); drawCrop();
+  requestAnimationFrame(()=>{ fitCropCanvas(); drawCrop(); });
+  setTimeout(()=>{ fitCropCanvas(); drawCrop(); }, 120);
 }
 
 function fitCropCanvas(){
   const stage = document.querySelector('.crop-stage');
-  const maxW = stage.clientWidth - 24, maxH = stage.clientHeight - 24;
+  let maxW = (stage ? stage.clientWidth : 0) - 24, maxH = (stage ? stage.clientHeight : 0) - 24;
+  if(!(maxW > 40) || !(maxH > 40)){           // por si aún no hay layout
+    maxW = Math.min(window.innerWidth || 360, 520) - 24;
+    maxH = Math.max(240, (window.innerHeight || 640) * 0.6);
+  }
+  maxW = Math.max(80, maxW); maxH = Math.max(120, maxH);   // nunca negativo/cero
   const img = cropState.img;
-  const s = Math.min(maxW/img.width, maxH/img.height);
+  let s = Math.min(maxW/img.width, maxH/img.height);
+  if(!(s > 0)) s = 0.2;
   cropState.scale = s;
-  const cw = Math.round(img.width*s), ch = Math.round(img.height*s);
-  cropState.canvas.width = cw; cropState.canvas.height = ch;
+  cropState.canvas.width  = Math.max(1, Math.round(img.width*s));
+  cropState.canvas.height = Math.max(1, Math.round(img.height*s));
 }
 
 function drawCrop(){
@@ -396,29 +406,41 @@ function drawCrop(){
   ctx.closePath();
   ctx.fillStyle='rgba(31,122,224,.18)'; ctx.fill();
   ctx.lineWidth=2.5; ctx.strokeStyle='#2b8bf2'; ctx.stroke();
-  // asas
+  // asas (grandes, fáciles de agarrar con el dedo)
   corners.forEach(c=>{
     const x=c.x*scale, y=c.y*scale;
-    ctx.beginPath(); ctx.arc(x,y,11,0,7); ctx.fillStyle='#fff'; ctx.fill();
-    ctx.lineWidth=3; ctx.strokeStyle='#2b8bf2'; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,15,0,7); ctx.fillStyle='#fff'; ctx.fill();
+    ctx.lineWidth=4; ctx.strokeStyle='#2b8bf2'; ctx.stroke();
+    ctx.beginPath(); ctx.arc(x,y,4,0,7); ctx.fillStyle='#2b8bf2'; ctx.fill();
   });
 }
 
+/* Posición del puntero en coordenadas de la IMAGEN. Usa la relación tamaño-real /
+   tamaño-mostrado del lienzo, así funciona aunque el CSS lo reescale. */
 function cropPointerPos(e){
-  const r = cropState.canvas.getBoundingClientRect();
-  const t = e.touches ? e.touches[0] : e;
-  return { x:(t.clientX-r.left)/cropState.scale, y:(t.clientY-r.top)/cropState.scale };
+  const rect = cropState.canvas.getBoundingClientRect();
+  const t = (e.touches && e.touches[0]) ? e.touches[0] : e;
+  const rw = rect.width || 1, rh = rect.height || 1;
+  return {
+    x: (t.clientX - rect.left) * (cropState.img.width  / rw),
+    y: (t.clientY - rect.top)  * (cropState.img.height / rh),
+    grab: 40 * (cropState.img.width / rw)   // ~40px de dedo, en coords de imagen
+  };
 }
 function cropDown(e){
-  e.preventDefault();
+  if(e.cancelable) e.preventDefault();
+  // si el lienzo no se midió bien (layout tardío), remedir antes de mapear el toque
+  const rect = cropState.canvas.getBoundingClientRect();
+  if(rect.width < 2 || rect.height < 2){ fitCropCanvas(); drawCrop(); }
   const p = cropPointerPos(e);
   let idx=-1, best=1e9;
   cropState.corners.forEach((c,i)=>{ const d=Math.hypot(c.x-p.x,c.y-p.y); if(d<best){best=d; idx=i;} });
-  if(best < 60/cropState.scale) cropState.drag = idx;
+  const grab = Math.max(p.grab, cropState.img.width*0.08);
+  cropState.drag = (best < grab) ? idx : -1;
 }
 function cropMove(e){
   if(cropState.drag<0) return;
-  e.preventDefault();
+  if(e.cancelable) e.preventDefault();
   const p = cropPointerPos(e);
   const img = cropState.img;
   cropState.corners[cropState.drag] = {
@@ -428,6 +450,24 @@ function cropMove(e){
   drawCrop();
 }
 function cropUp(){ cropState.drag = -1; }
+
+/* Gira el escaneo 90° (para tickets que salen tumbados/apaisados). */
+function rotateCrop(){
+  const src = cropState.img;
+  const r = document.createElement('canvas');
+  r.width = src.height; r.height = src.width;
+  const ctx = r.getContext('2d');
+  ctx.translate(r.width/2, r.height/2);
+  ctx.rotate(Math.PI/2);
+  ctx.drawImage(src, -src.width/2, -src.height/2);
+  cropState.img = r;
+  const found = autoDetectCorners(r);
+  cropState.corners = found || [
+    {x:r.width*0.06,y:r.height*0.06},{x:r.width*0.94,y:r.height*0.06},
+    {x:r.width*0.94,y:r.height*0.94},{x:r.width*0.06,y:r.height*0.94}
+  ];
+  fitCropCanvas(); drawCrop();
+}
 
 async function confirmCrop(){
   overlay(true, 'Procesando escaneo…', 'Enderezando y mejorando');
@@ -633,9 +673,18 @@ async function startReview(finalCanvas){
   if(p.date) document.getElementById('fDate').value = p.date;
   if(p.ivaRate!==null){ state.draft.ivaRate = p.ivaRate; markRates(); }
   if(p.total!==null) document.getElementById('fTotal').value = num2(p.total);
-  if(p.total!==null && state.draft.ivaRate!==null) recalcFromTotal();
-  if(p.base!==null) document.getElementById('fBase').value = num2(p.base);
-  if(p.ivaAmount!==null) document.getElementById('fIva').value = num2(p.ivaAmount);
+  // Base e IVA: se usan los del OCR solo si CUADRAN con el total (base+IVA≈total).
+  // Si no cuadran, se calculan desde total+tipo, que es mucho más fiable.
+  const T=p.total, B=p.base, I=p.ivaAmount; let R=state.draft.ivaRate;
+  const setBI = (b,i)=>{ document.getElementById('fBase').value=num2(b); document.getElementById('fIva').value=num2(i); state.draft.base=b; state.draft.ivaAmount=i; };
+  const inferRate = (b,i)=>{ const r=Math.round(i/b*100); if([21,10,4].includes(r)){ state.draft.ivaRate=r; markRates(); } };
+  if(B!==null && I!==null && T!==null && Math.abs(B+I-T)<=0.05){
+    setBI(round2(B), round2(I)); if(R===null) inferRate(B,I);
+  } else if(T!==null && R!==null){
+    recalcFromTotal();
+  } else if(B!==null && T!==null && B>0 && B<T){
+    setBI(round2(B), round2(T-B)); if(R===null) inferRate(B, T-B);
+  }
   updateCalcNote();
 
   const got = [p.merchant&&'comercio', p.date&&'fecha', p.total!==null&&'total'].filter(Boolean);
@@ -1080,12 +1129,23 @@ function wire(){
   document.getElementById('cropBack').onclick = ()=>nav.back();
   document.getElementById('cropRetry').onclick = ()=>{ nav.back(); };
   document.getElementById('cropConfirm').onclick = confirmCrop;
+  document.getElementById('cropRotate').onclick = rotateCrop;
   const cc = document.getElementById('cropCanvas');
-  cc.addEventListener('mousedown', cropDown); cc.addEventListener('mousemove', cropMove);
-  window.addEventListener('mouseup', cropUp);
-  cc.addEventListener('touchstart', cropDown, {passive:false});
-  cc.addEventListener('touchmove', cropMove, {passive:false});
-  cc.addEventListener('touchend', cropUp);
+  // eventos de puntero: unifican dedo y ratón; la captura mantiene el arrastre
+  // aunque el dedo salga del lienzo.
+  cc.addEventListener('pointerdown', e=>{
+    try{ cc.setPointerCapture(e.pointerId); }catch(_){}
+    cropDown(e);
+  });
+  cc.addEventListener('pointermove', cropMove);
+  cc.addEventListener('pointerup', cropUp);
+  cc.addEventListener('pointercancel', cropUp);
+  // reajustar el lienzo al girar/redimensionar el móvil
+  window.addEventListener('resize', ()=>{
+    if(document.getElementById('crop').classList.contains('active') && cropState.img){
+      fitCropCanvas(); drawCrop();
+    }
+  });
 
   // REVISIÓN
   document.getElementById('reviewBack').onclick = ()=>nav.back();
@@ -1119,9 +1179,15 @@ window.addEventListener('DOMContentLoaded', async ()=>{
   wire();
   try{ await DB.init(); }catch(e){ console.error('DB', e); toast('No se pudo abrir el almacenamiento'); }
   refreshHomeStats();
-  // registrar service worker (para "añadir a inicio" y uso offline del cascarón)
-  if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
+  // Sin service worker: así nunca se sirve una versión cacheada antigua. Si había
+  // uno registrado de una versión previa, se elimina y se limpian las cachés para
+  // que siempre cargue la última versión. (La app se sigue pudiendo "añadir a
+  // inicio" gracias al manifest.)
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.getRegistrations().then(rs=>rs.forEach(r=>r.unregister())).catch(()=>{});
+  }
+  if(window.caches){ caches.keys().then(ks=>ks.forEach(k=>caches.delete(k))).catch(()=>{}); }
 });
 
 // Exponer algunas funciones para pruebas/depuración
-window.__app = { DB, parseReceipt, parseMoney, buildExcel, buildZip, autoDetectCorners, state };
+window.__app = { DB, parseReceipt, parseMoney, buildExcel, buildZip, autoDetectCorners, state, cropState };

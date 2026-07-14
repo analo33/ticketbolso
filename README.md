@@ -56,7 +56,7 @@ python3 -m http.server 8123
 - `index.html` — interfaz y estilos.
 - `app.js` — toda la lógica (cámara, detección de bordes, enderezado, mejora,
   OCR, PDF, archivo por meses, Excel, ZIP, compartir).
-- `manifest.webmanifest`, `sw.js`, `icon.svg` — para instalarla como app (PWA).
+- `manifest.webmanifest`, `icon.svg` — para instalarla como app (Añadir a inicio).
 
 ## Librerías (desde CDN)
 
