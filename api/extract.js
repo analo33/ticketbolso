@@ -42,6 +42,15 @@ export default async function handler(req, res) {
     res.status(405).json({ error: "method-not-allowed" });
     return;
   }
+  // Solo aceptar llamadas desde la propia app (bloquea el abuso casual desde
+  // otras webs; el límite de gasto en la cuenta de Anthropic es la red de
+  // seguridad definitiva).
+  const origin = req.headers.origin || "";
+  const okOrigin = /^https:\/\/ticketbolso[a-z0-9-]*\.vercel\.app$/.test(origin);
+  if (!okOrigin) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     // Sin clave configurada: la app usará el OCR local como respaldo.
