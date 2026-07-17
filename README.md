@@ -68,6 +68,20 @@ python3 -m http.server 8123
 La detección de bordes y el enderezado se hacen en JavaScript propio, sin
 librerías pesadas.
 
+## Lectura con IA (opcional, recomendada)
+
+La app puede leer los tickets con **Claude (visión)** en vez del OCR local —
+mucho más preciso con tickets térmicos reales. Para activarlo:
+
+1. Crea una clave API en <https://console.anthropic.com> (Settings → API keys).
+2. En Vercel: proyecto `ticketbolso` → **Settings → Environment Variables** →
+   añade `ANTHROPIC_API_KEY` con esa clave → **Redeploy**.
+
+Sin la clave, la app funciona igual con el OCR local (gratis). Con la clave,
+cada escaneo envía la imagen al API de Anthropic para leerla (coste aproximado:
+1–3 céntimos por ticket). El archivo de tickets sigue guardándose solo en tu
+teléfono.
+
 ## Limitaciones honestas
 
 - **La extracción automática (OCR) es aproximada.** En tickets nítidos suele
