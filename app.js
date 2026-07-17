@@ -514,6 +514,45 @@ async function runOCR(canvas){
   }catch(e){ console.warn('OCR error', e); return ''; }
 }
 
+/* ============================================================================
+   Extracción con IA (visión) — llama a /api/extract (Claude lee la foto).
+   Devuelve los campos con la misma forma que parseReceipt, o null si la IA
+   no está disponible (sin clave, sin red, error) para caer al OCR local.
+   ========================================================================== */
+async function runAIExtract(canvas){
+  try{
+    const work = resizeCanvas(canvas, 1200);
+    const b64 = work.toDataURL('image/jpeg', 0.85).split(',')[1];
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), 30000);
+    const r = await fetch('/api/extract', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ image: b64 }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if(!r.ok) return null;
+    const d = await r.json();
+    if(!d || d.error) return null;
+    const numOrNull = v => (typeof v === 'number' && isFinite(v)) ? v : null;
+    const res = {
+      merchant: (typeof d.comercio === 'string' ? d.comercio.trim().slice(0,60) : ''),
+      taxId: (typeof d.cif === 'string' ? d.cif.toUpperCase().replace(/[^0-9A-Z]/g,'').slice(0,9) : ''),
+      date: null,
+      total: numOrNull(d.total),
+      base: numOrNull(d.base),
+      ivaRate: [21,10,4,0].includes(d.tipo_iva) ? d.tipo_iva : null,
+      ivaAmount: numOrNull(d.cuota_iva),
+    };
+    if(typeof d.fecha === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.fecha)){
+      const [y,m,dd] = d.fecha.split('-').map(Number);
+      res.date = toISODate(y, m, dd);   // valida y descarta fechas imposibles/futuras
+    }
+    return res;
+  }catch(e){ return null; }
+}
+
 /* Nombres de mes en español y catalán (sin acentos, para búsqueda). */
 const MESES_NOMBRE = {
   enero:1,ene:1, febrero:2,feb:2, marzo:3,mar:3, abril:4,abr:4, mayo:5,may:5,
@@ -705,9 +744,15 @@ async function startReview(finalCanvas){
   document.getElementById('ocrStatus').innerHTML = '<span class="spin"></span> Leyendo el ticket…';
   nav.go('review');
 
-  // OCR en segundo plano
-  const text = await runOCR(finalCanvas);
-  const p = parseReceipt(text);
+  // Extracción en segundo plano: primero IA (visión); si no está disponible
+  // o no lee nada, respaldo con OCR local (Tesseract).
+  let p = await runAIExtract(finalCanvas);
+  let fuente = 'IA';
+  if(!p || (!p.merchant && p.total===null && !p.date)){
+    const text = await runOCR(finalCanvas);
+    p = parseReceipt(text);
+    fuente = 'OCR';
+  }
   // rellenar solo lo vacío (por si la usuaria ya escribió algo)
   if(p.merchant && !document.getElementById('fMerchant').value) document.getElementById('fMerchant').value = p.merchant;
   if(p.taxId && !document.getElementById('fTaxId').value) document.getElementById('fTaxId').value = p.taxId;
@@ -738,11 +783,11 @@ async function startReview(finalCanvas){
     // no se leyó la fecha del ticket -> avisar y resaltar (está la de hoy como provisional)
     fDate.style.outline = '2px solid #e0a11b';
     st.innerHTML = partes.length
-      ? `✨ Detecté: ${partes.join(', ')}. ⚠️ No leí la <b>fecha del ticket</b>: puse la de hoy, cámbiala a la del ticket para archivarlo en su mes.`
+      ? `✨ Leído con ${fuente}: ${partes.join(', ')}. ⚠️ No leí la <b>fecha del ticket</b>: puse la de hoy, cámbiala a la del ticket para archivarlo en su mes.`
       : '⚠️ No pude leer los datos (incluida la <b>fecha del ticket</b>). Rellénalos a mano; la fecha decide el mes de archivo.';
   } else {
     fDate.style.outline = '';
-    st.innerHTML = `✨ Detecté: ${partes.join(', ')}. Revisa y corrige si hace falta.`;
+    st.innerHTML = `✨ Leído con ${fuente}: ${partes.join(', ')}. Revisa y corrige si hace falta.`;
   }
 }
 
